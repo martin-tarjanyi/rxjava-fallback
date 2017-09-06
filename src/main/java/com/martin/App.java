@@ -1,23 +1,85 @@
 package com.martin;
 
-import java.util.Arrays;
+import io.reactivex.Emitter;
+import io.reactivex.Observable;
+import io.reactivex.functions.Predicate;
+import rx.observables.SyncOnSubscribe;
+
+import java.util.Collections;
 import java.util.LinkedList;
 import java.util.Queue;
-
-import io.reactivex.Observable;
-import io.reactivex.ObservableSource;
 
 /**
  * Hello world!
  */
 public class App
 {
-    private static final Queue<Item> items = new LinkedList<>(
-            Arrays.asList(Item.of("first"), Item.of("second"), Item.of("third"), Item.of("fourth"), Item.of("root")));
-
     public static void main(String[] args)
     {
-        Result result = Observable.just(new Item("start"))
+        //        solutionWithRecursion();
+        //        solutionWithRangeConcatMapAndExternalQueue();
+
+                solutionWithGenerate();
+
+        //        solutionWithRepeat();
+        //        solutionWIthRxJava1SyncOnSubscribe();
+    }
+
+    private static void solutionWithGenerate()
+    {
+        Result startElement = Result.of(Item.of("start"));
+
+        Result result = Observable.generate(() -> startElement, App::generate)
+                                  .startWith(startElement)
+                                  .lastElement()
+                                  .blockingGet();
+
+        System.out.println(result);
+    }
+
+    private static Result generate(Result previousResult, Emitter<Result> emitter)
+    {
+        Result newResult = Service.callDirectly(previousResult.getItem());
+
+        if (newResult.isEmpty())
+        {
+            //            emitter.onNext(previousResult);
+            emitter.onComplete();
+        } else
+        {
+            emitter.onNext(newResult);
+        }
+
+        return newResult;
+    }
+
+    private static void solutionWIthRxJava1SyncOnSubscribe()
+    {
+        Result start = Result.of(Item.of("start"));
+
+        Result last = rx.Observable
+                .create(SyncOnSubscribe.<Result, Result>createStateful(() -> start, (previous, subscriber) -> {
+                    Result result = Service.callDirectly(previous.getItem());
+                    if (result.isEmpty())
+                    {
+                        subscriber.onCompleted();
+                        return result;
+                    }
+
+                    subscriber.onNext(result);
+                    return result;
+                }))
+                .startWith(start)
+                .toBlocking()
+                .last();
+
+        System.out.println(last);
+    }
+
+    private static void solutionWithRecursion()
+    {
+
+        Result result = Observable.just(Item.of("start"))
                                   .map(Result::of)
                                   .flatMap(App::fallbackUntilIsRoot)
                                   .blockingSingle();
@@ -25,98 +87,50 @@ public class App
         System.out.println(result);
     }
 
-    private static ObservableSource<Result> fallbackUntilIsRoot(Result result)
+    private static void solutionWithRangeConcatMapAndExternalQueue()
     {
-        if (result.isRoot())
+        Queue<Item> todoList = new LinkedList<>(Collections.singleton(Item.of("start")));
+
+        Result result = Observable.range(1, Integer.MAX_VALUE) //max tries
+                                  .concatMap(attempt -> Service.call(todoList))
+                                  .takeUntil(Result::isEmpty)
+                                  .takeLast(2)
+                                  .firstElement()
+                                  .blockingGet();
+
+        System.out.println(result);
+    }
+
+    private static void solutionWithRepeat()
+    {
+        Queue<Result> todoList = new LinkedList<>(Collections.singleton(Result.of(Item.of("start"))));
+
+        Result result = Observable.fromCallable(todoList::poll)
+                                  .map(oldResult -> {
+                                      Result newResult = Service.callDirectly(oldResult.getItem());
+                                      todoList.add(newResult);
+                                      return newResult;
+                                  })
+                                  .repeat()
+                                  .takeUntil((Predicate<? super Result>) Result::isEmpty)
+                                  .takeLast(2)
+                                  .first(Result.of(Item.of("Well, something went wrong.")))
+                                  .blockingGet();
+
+        System.out.println(result);
+    }
+
+    private static Observable<Result> fallbackUntilIsRoot(Result previousResult)
+    {
+        if (previousResult.isRoot())
         {
-            return Observable.just(result);
+            return Observable.just(previousResult);
         } else
         {
-            return Observable.fromCallable(() -> callDependency(result.getItem()))
-                             .onErrorReturn(e -> Result.ofRoot(result.getItem()))
-                             .flatMap(App::fallbackUntilIsRoot); // recursion
-        }
-    }
-
-    private static Result callDependency(Item previousItem)
-    {
-        //        throw new RuntimeException("service failed"); //to test error
-        Item newItem = items.poll(); //we could pass previousItem to a real service here
-
-        if (newItem == null) // we have no more ancestors
-        {
-            return Result.ofRoot(previousItem);
-        }
-
-        return Result.of(newItem);
-    }
-
-    private static class Result
-    {
-        private final Item item;
-        private final boolean isRoot;
-
-        private Result(Item item, boolean isRoot)
-        {
-            this.item = item;
-            this.isRoot = isRoot;
-        }
-
-        private static Result of(Item item)
-        {
-            return new Result(item, false);
-        }
-
-        private static Result ofRoot(Item item)
-        {
-            return new Result(item, true);
-        }
-
-        Item getItem()
-        {
-            return item;
-        }
-
-        boolean isRoot()
-        {
-            return isRoot;
-        }
-
-        @Override
-        public String toString()
-        {
-            return "Result{" +
-                    "item=" + item +
-                    ", isRoot=" + isRoot +
-                    '}';
-        }
-    }
-
-    private static class Item
-    {
-        private final String value;
-
-        private Item(String value)
-        {
-            this.value = value;
-        }
-
-        private static Item of(String value)
-        {
-            return new Item(value);
-        }
-
-        public String getValue()
-        {
-            return value;
-        }
-
-        @Override
-        public String toString()
-        {
-            return "Item{" +
-                    "value='" + value + '\'' +
-                    '}';
+            return Service.call(previousResult.getItem())
+                          .onErrorReturn(e -> Result.ofRoot(previousResult.getItem()))
+                          .map(result -> result.isEmpty() ? Result.ofRoot(previousResult.getItem()) : result)
+                          .flatMap(App::fallbackUntilIsRoot); // recursion
         }
     }
 }
