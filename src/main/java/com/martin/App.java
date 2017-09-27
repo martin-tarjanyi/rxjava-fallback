@@ -27,7 +27,7 @@ public class App
 
     private static void solutionWithGenerate()
     {
-        Result startElement = Result.of(Item.of("start"));
+        Result startElement = Result.of(Item.of("starting"));
 
         Result result = Observable.generate(() -> startElement, App::generate)
                                   .startWith(startElement)
